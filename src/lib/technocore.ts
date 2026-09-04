@@ -73,11 +73,47 @@ export async function readNote(ns: string, key: string, signal?: AbortSignal): P
   return text.replace(/^!!\s*UNTRUSTED CONTENT[^\n]*\n?/i, "").trim() || null;
 }
 
-/** Export a room that may not exist. An absent deal room is a real answer. */
-export async function exportRoomSafe(room: string, signal?: AbortSignal): Promise<ExportedRecord[]> {
-  try {
-    return await exportRoom(room, signal);
-  } catch {
-    return [];
+/**
+ * A deal-room read, distinguishing the two things a naive `catch` conflates:
+ * a room that is genuinely empty, and a read that failed.
+ *
+ * This matters more than it looks. Technocore sheds load with transient 5xx,
+ * and treating a failed read as an empty deal room turns a settled contract
+ * into a misrouted one. The verdict would then be an artifact of server load
+ * rather than of anything the parties did.
+ */
+export interface RoomRead {
+  records: ExportedRecord[];
+  /** False when we could not find out; the caller must not conclude anything. */
+  known: boolean;
+}
+
+export async function readDealRoom(room: string, signal?: AbortSignal): Promise<RoomRead> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(`${BASE}/r/${encodeURIComponent(room)}/export`, { signal });
+
+      // 404 is a real answer: the room was never created.
+      if (res.status === 404) return { records: [], known: true };
+
+      if (res.status >= 500 || res.status === 429) {
+        await new Promise((r) => setTimeout(r, 400 * 2 ** attempt));
+        continue;
+      }
+      if (!res.ok) return { records: [], known: false };
+
+      const body = await res.text();
+      const records: ExportedRecord[] = [];
+      for (const line of body.split("\n")) {
+        if (!line.trim()) continue;
+        const rec = parseRecord(line);
+        if (rec) records.push(rec);
+      }
+      return { records, known: true };
+    } catch (e) {
+      if (signal?.aborted) return { records: [], known: false };
+      await new Promise((r) => setTimeout(r, 400 * 2 ** attempt));
+    }
   }
+  return { records: [], known: false };
 }

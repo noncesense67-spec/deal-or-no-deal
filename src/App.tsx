@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { exportRoom, exportRoomSafe, type ExportedRecord } from "./lib/technocore";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { exportRoom, readDealRoom, type ExportedRecord } from "./lib/technocore";
+import { scanAll, type ScanProgress } from "./lib/scan";
 import {
   groupContracts, resolve, VERDICT_LABEL, VERDICT_TONE,
   type Contract, type Verdict,
@@ -7,8 +8,7 @@ import {
 
 const OFFER_ROOM = "tclk-offers";
 const PAGE = 25;
-/** Deal rooms read at random to give the headline a real denominator. */
-const SAMPLE = 150;
+
 
 const short = (did: string) => (did.startsWith("did:key:") ? `${did.slice(8, 20)}…` : did);
 const ago = (ts: string) => {
@@ -26,7 +26,8 @@ export default function App() {
   const [filter, setFilter] = useState<Verdict | "all">("all");
   const [selected, setSelected] = useState<string | null>(null);
   const [resolving, setResolving] = useState(false);
-  const [sampled, setSampled] = useState(0);
+  const [scan, setScan] = useState<ScanProgress | null>(null);
+  const scanStarted = useRef(false);
 
   useEffect(() => {
     const ac = new AbortController();
@@ -60,7 +61,7 @@ export default function App() {
     setResolving(true);
 
     const done = await Promise.all(
-      pending.map(async (c) => resolve(c, await exportRoomSafe(c.dealRoomName))),
+      pending.map(async (c) => { const r = await readDealRoom(c.dealRoomName); return r.known ? resolve(c, r.records) : c; }),
     );
 
     setContracts((prev) => {
@@ -74,36 +75,35 @@ export default function App() {
   useEffect(() => { void resolveVisible(shown); }, [shown, resolveVisible]);
 
   /**
-   * Headline figures come from a RANDOM SAMPLE, not from whatever happens to be
-   * on screen. Resolving all ten thousand would take a quarter of an hour of
-   * requests; resolving only the visible rows and printing the totals as if
-   * they were board-wide is how the first version of this page ended up
-   * claiming nothing ever settles. A sample with its size stated is honest.
+   * Resolve EVERY contract, in the background, streaming results as they land.
+   * A sample would be cheaper, but a tool whose entire claim is rigour should
+   * not report a percentage it did not actually measure.
+   *
+   * Guarded by a ref rather than by state. The scan updates `contracts` and
+   * `scan` as it runs, so listing either as a dependency makes the effect
+   * re-run and its own cleanup abort the scan after the first batch — which
+   * looks exactly like a scan that silently stops at 25.
    */
   useEffect(() => {
-    if (records === null || contracts.size === 0 || sampled > 0) return;
-    let cancelled = false;
+    if (records === null || scanStarted.current) return;
+    scanStarted.current = true;
 
-    (async () => {
-      const pool = [...contracts.values()].filter((c) => c.verdict === "unchecked");
-      const pick = pool.sort(() => Math.random() - 0.5).slice(0, SAMPLE);
-      const CONCURRENCY = 10;
+    const ac = new AbortController();
+    const pending = [...contracts.values()].filter((c) => !c.dealRoomRead);
+    setScan({ done: 0, total: pending.length, finished: pending.length === 0 });
 
-      for (let i = 0; i < pick.length && !cancelled; i += CONCURRENCY) {
-        const batch = pick.slice(i, i + CONCURRENCY);
-        const done = await Promise.all(batch.map(async (c) => resolve(c, await exportRoomSafe(c.dealRoomName))));
-        if (cancelled) return;
-        setContracts((prev) => {
-          const next = new Map(prev);
-          for (const c of done) next.set(c.id, c);
-          return next;
-        });
-        setSampled((n) => n + done.length);
-      }
-    })();
+    void scanAll(pending, (resolved, progress) => {
+      setContracts((prev) => {
+        const next = new Map(prev);
+        for (const c of resolved) next.set(c.id, c);
+        return next;
+      });
+      setScan(progress);
+    }, ac.signal);
 
-    return () => { cancelled = true; };
-  }, [records, contracts, sampled]);
+    return () => ac.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [records]);
 
   const tally = useMemo(() => {
     const t: Partial<Record<Verdict, number>> = {};
@@ -153,22 +153,26 @@ export default function App() {
             </div>
             <div className="stat">
               <span className="n">{checked === 0 ? "—" : `${Math.round(((tally.settled ?? 0) / checked) * 100)}%`}</span>
-              <span className="k">settled, of {checked.toLocaleString()} deal rooms read</span>
+              <span className="k">settled &middot; {(tally.settled ?? 0).toLocaleString()} contracts</span>
             </div>
             <div className="stat flag">
               <span className="n">{checked === 0 ? "—" : `${Math.round(((tally.misrouted ?? 0) / checked) * 100)}%`}</span>
-              <span className="k">completion posted to the wrong room</span>
+              <span className="k">misrouted &middot; {(tally.misrouted ?? 0).toLocaleString()} contracts</span>
             </div>
             <div className="stat">
-              <span className="n">{checked.toLocaleString()}</span>
-              <span className="k">sampled at random{resolving || sampled < SAMPLE ? " · reading…" : ""}</span>
+              <span className="n">{scan && !scan.finished ? `${Math.round((checked / Math.max(1, ordered.length)) * 100)}%` : "100%"}</span>
+              <span className="k">
+                {scan && !scan.finished
+                  ? `scanned · ${checked.toLocaleString()} of ${ordered.length.toLocaleString()} deal rooms`
+                  : `every retained contract checked`}
+              </span>
             </div>
           </div>
           <p className="note">
-            Percentages above are a <strong>random sample</strong> of deal rooms, not the whole board &mdash;
-            resolving all {ordered.length.toLocaleString()} would take a quarter of an hour of requests.
-            Rows you scroll to are resolved as you go; everything else stays <strong>unchecked</strong>,
-            which is the truth rather than a guess. Signatures are not
+            Every contract is checked, not a sample &mdash; one deal-room read each, paced under the
+            venue&rsquo;s rate limit, which takes a few minutes and fills in as it goes. The figures are
+            complete for <strong>everything still retained</strong>: the board is a ring, so contracts
+            older than it are gone from the venue and nobody can judge them. Signatures are not
             the problem here: nearly every frame verifies. The spec is what separates them, since{" "}
             <em>a valid signature in the wrong room cannot advance state.</em>
           </p>
