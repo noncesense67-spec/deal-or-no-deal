@@ -249,7 +249,14 @@ function OfferList({ title, offers }: { title: string; offers: OpenOffer[] }) {
     (async () => {
       for (const o of offers) {
         if (!live) return;
-        const spec = await resolveJob(o.job, ac.signal).catch(() => null);
+        // A failed fetch leaves the row unresolved rather than asserting that
+        // the offer carries no description.
+        let spec: JobSpec | null;
+        try {
+          spec = await resolveJob(o.job, ac.signal);
+        } catch {
+          continue;
+        }
         if (!live) return;
         setSpecs((prev) => new Map(prev).set(o.offerId, spec));
       }

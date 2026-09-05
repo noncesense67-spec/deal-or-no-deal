@@ -15,7 +15,7 @@
  * treated as an instruction, by this module or by anything reading its output.
  */
 
-import { readNote, readRoomText } from "./technocore";
+import { readNoteChecked, exportRoom } from "./technocore";
 
 export interface JobBinding {
   proto?: unknown;
@@ -85,20 +85,75 @@ export function parseJobText(raw: string, proto: string, id: string, where: JobS
   };
 }
 
+/**
+ * Thrown when the description could not be fetched, as distinct from an offer
+ * that carries none. The caller retries these; a null result is final.
+ */
+export class JobUnavailableError extends Error {}
+
+/**
+ * Only settled outcomes are cached. Caching a failed read as `null` turns one
+ * bad minute into a permanent "No description posted" on that card, which is
+ * exactly what happened after the rate limit was exhausted: the descriptions
+ * resolved fine on a direct call while the grid insisted 55 of 60 offers had
+ * none.
+ */
 const cache = new Map<string, JobSpec | null>();
 
-/** Kibble's board, indexed once by job id rather than re-read per offer. */
-let kibbleIndex: Map<string, string> | null = null;
+/**
+ * The answer when no request is needed.
+ *
+ * Half the open board (966 of 1,934 offers) carries its description inline in
+ * the frame, and a further 165 carry none at all. Both are known the moment the
+ * board is parsed, so making them wait in a network queue behind note fetches
+ * showed "Loading the work…" on cards whose text was already in hand.
+ *
+ * Returns `undefined` when the answer genuinely requires a request.
+ */
+export function resolveJobLocal(job: JobBinding | undefined): JobSpec | null | undefined {
+  if (!job) return null;
+  const proto = typeof job.proto === "string" ? job.proto : "unknown";
+  const id = typeof job.id === "string" ? job.id : "";
+  const context = typeof job.context === "string" ? job.context.trim() : "";
 
-async function loadKibble(signal?: AbortSignal): Promise<Map<string, string>> {
+  if (context && !context.startsWith("/kv/")) return parseJobText(context, proto, id, "inline");
+  if (!context && proto !== "kibble") return null;   // an id and nothing else
+  return undefined;
+}
+
+/**
+ * Kibble's board, indexed once by job id rather than re-read per offer.
+ *
+ * Read from `/export` rather than a recent-messages window: the board holds
+ * 12,428 messages carrying 924 job postings, and a 400-message window missed
+ * most of the ids being offered against — those listings then showed "No
+ * description posted" for work that was in fact fully described. One request
+ * covers all of them, and it is only made when a kibble offer is on screen.
+ */
+let kibbleIndex: Map<string, string> | null = null;
+/** Shared so concurrent workers await one export rather than starting five. */
+let kibbleLoading: Promise<Map<string, string> | null> | null = null;
+
+async function loadKibble(signal?: AbortSignal): Promise<Map<string, string> | null> {
   if (kibbleIndex) return kibbleIndex;
+  if (kibbleLoading) return kibbleLoading;
+  kibbleLoading = buildKibbleIndex(signal).finally(() => {
+    kibbleLoading = null;
+  });
+  return kibbleLoading;
+}
+
+async function buildKibbleIndex(signal?: AbortSignal): Promise<Map<string, string> | null> {
   const index = new Map<string, string>();
-  const messages = await readRoomText("kibble", 400, signal);
-  for (const m of messages) {
+  const records = await exportRoom("kibble", signal).catch(() => null);
+  // A failed read must not be memoised as an empty index; that would strand
+  // every kibble-sourced offer for the rest of the page's life.
+  if (!records || records.length === 0) return null;
+  for (const r of records) {
     // "JOB v1 | <id> | …" is the posting; CLAIM/DELIVER lines are not the work.
-    const match = /^JOB\s+v1\s*\|\s*([A-Za-z0-9]+)\s*\|/i.exec(m.text.trim());
+    const match = /^JOB\s+v1\s*\|\s*([A-Za-z0-9]+)\s*\|/i.exec(r.text.trim());
     const jobId = match?.[1];
-    if (jobId && !index.has(jobId)) index.set(jobId, m.text.trim());
+    if (jobId && !index.has(jobId)) index.set(jobId, r.text.trim());
   }
   kibbleIndex = index;
   return index;
@@ -124,14 +179,17 @@ export async function resolveJob(job: JobBinding | undefined, signal?: AbortSign
     const ns = segments[2];
     const key = segments[3];
     if (ns && key) {
-      const note = await readNote(ns, key, signal);
-      if (note) spec = parseJobText(note, proto, id, "note");
+      const note = await readNoteChecked(ns, key, signal);
+      if (!note.known) throw new JobUnavailableError(`could not read ${context}`);
+      if (note.text) spec = parseJobText(note.text, proto, id, "note");
     }
   } else if (context) {
     // Not a path: the description itself, carried in the frame.
     spec = parseJobText(context, proto, id, "inline");
   } else if (proto === "kibble" && id) {
-    const posting = (await loadKibble(signal)).get(id);
+    const index = await loadKibble(signal);
+    if (index === null) throw new JobUnavailableError("could not read the kibble board");
+    const posting = index.get(id);
     if (posting) spec = parseJobText(posting, proto, id, "board");
   }
 

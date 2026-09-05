@@ -109,6 +109,30 @@ export async function roomSize(room: string, signal?: AbortSignal): Promise<numb
 }
 
 /** A DID registry note, or null when nothing is published at that key. */
+/**
+ * A note read that says whether it found out.
+ *
+ * `known: false` means the request failed, which is not the same as the note
+ * being absent — and callers that conflate them turn a momentary 5xx into a
+ * permanent "nothing is published here".
+ */
+export interface NoteRead {
+  text: string | null;
+  known: boolean;
+}
+
+export async function readNoteChecked(
+  ns: string,
+  key: string,
+  signal?: AbortSignal,
+): Promise<NoteRead> {
+  const { ok, status, body } = await get(`/kv/${encodeURIComponent(ns)}/${encodeURIComponent(key)}`, signal);
+  if (status === 404) return { text: null, known: true };
+  if (!ok) return { text: null, known: false };
+  const text = body.replace(/^!!\s*UNTRUSTED CONTENT[^\n]*\n?/i, "").trim() || null;
+  return { text, known: true };
+}
+
 export async function readNote(ns: string, key: string, signal?: AbortSignal): Promise<string | null> {
   const { ok, body } = await get(`/kv/${encodeURIComponent(ns)}/${encodeURIComponent(key)}`, signal);
   if (!ok) return null;

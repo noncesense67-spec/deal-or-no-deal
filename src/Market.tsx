@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { OpenOffer } from "./lib/verify";
-import { resolveJob, type JobSpec } from "./lib/jobs";
+import { resolveJob, resolveJobLocal, JobUnavailableError, type JobSpec } from "./lib/jobs";
 
 /**
  * A deal has no photograph, so the card's image is the contract itself: hue,
@@ -58,13 +58,33 @@ function useJobs(offers: OpenOffer[]): Map<string, JobSpec | null> {
   const queue = useRef<OpenOffer[]>([]);
   const queued = useRef(new Set<string>());
   const running = useRef(false);
+  const attempts = useRef(new Map<string, number>());
+  /** Ids whose result actually reached state; the only ones safe to skip. */
+  const committed = useRef(new Set<string>());
 
   // Newly visible listings go to the front: they are what someone is looking at.
   const key = offers.map((o) => o.offerId).join(",");
   useEffect(() => {
     const fresh = offers.filter((o) => !queued.current.has(o.offerId));
+    if (fresh.length === 0) return;
     for (const o of fresh) queued.current.add(o.offerId);
-    if (fresh.length) queue.current.unshift(...fresh);
+
+    // Anything answerable without a request is answered now, not queued.
+    const immediate: [string, JobSpec | null][] = [];
+    const needsNetwork: OpenOffer[] = [];
+    for (const o of fresh) {
+      const local = resolveJobLocal(o.job);
+      if (local === undefined) needsNetwork.push(o);
+      else immediate.push([o.offerId, local]);
+    }
+    if (immediate.length) {
+      setSpecs((prev) => {
+        const next = new Map(prev);
+        for (const [k, v] of immediate) next.set(k, v);
+        return next;
+      });
+    }
+    if (needsNetwork.length) queue.current.unshift(...needsNetwork);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
@@ -86,6 +106,7 @@ function useJobs(offers: OpenOffer[]): Map<string, JobSpec | null> {
       if (!live || pending.size === 0) return;
       const batch = [...pending];
       pending.clear();
+      for (const [k] of batch) committed.current.add(k);
       setSpecs((prev) => {
         const next = new Map(prev);
         for (const [k, v] of batch) next.set(k, v);
@@ -109,10 +130,22 @@ function useJobs(offers: OpenOffer[]): Map<string, JobSpec | null> {
         }
         try {
           pending.set(next.offerId, await resolveJob(next.job, ac.signal));
-        } catch {
-          if (!live) return;
-          // Not resolved, so let it be picked up again rather than stranded.
-          queued.current.delete(next.offerId);
+        } catch (e) {
+          if (!live || ac.signal.aborted) return;
+          if (!(e instanceof JobUnavailableError)) {
+            pending.set(next.offerId, null);
+            continue;
+          }
+          // A description we could not fetch is not a description that does not
+          // exist. Retry it a few times rather than recording it as absent.
+          const tries = (attempts.current.get(next.offerId) ?? 0) + 1;
+          attempts.current.set(next.offerId, tries);
+          if (tries < 4) {
+            queue.current.push(next);
+            await new Promise((r) => setTimeout(r, 300 * tries));
+          } else {
+            pending.set(next.offerId, null);
+          }
         }
         if (pending.size >= 5) flush();
       }
@@ -124,6 +157,17 @@ function useJobs(offers: OpenOffer[]): Map<string, JobSpec | null> {
       live = false;
       running.current = false;
       ac.abort();
+      /**
+       * Anything not committed goes back to being unknown.
+       *
+       * Workers hold an item between `shift()` and the response, and a teardown
+       * mid-request — which StrictMode's double-mount guarantees on load — drops
+       * exactly those items: gone from the queue, still marked queued, so
+       * nothing ever retried them and five cards read "Loading the work…"
+       * forever. Only ids that reached state are treated as done.
+       */
+      queued.current = new Set(committed.current);
+      queue.current = [];
     };
   }, []);
 
