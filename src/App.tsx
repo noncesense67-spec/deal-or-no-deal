@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { exportRoom, readDealRoom, type ExportedRecord } from "./lib/technocore";
 import { scanAll, type ScanProgress } from "./lib/scan";
 import {
-  groupContracts, resolve, VERDICT_LABEL, VERDICT_TONE,
-  type Contract, type Verdict,
+  readBoard, resolve, VERDICT_LABEL, VERDICT_TONE,
+  type Contract, type Verdict, type OpenOffer,
 } from "./lib/verify";
+import Market from "./Market";
+import Dashboard from "./Dashboard";
 
 const OFFER_ROOM = "tclk-offers";
 const PAGE = 25;
@@ -23,16 +25,34 @@ export default function App() {
   const [records, setRecords] = useState<ExportedRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [contracts, setContracts] = useState<Map<string, Contract>>(new Map());
+  const [offers, setOffers] = useState<OpenOffer[]>([]);
+  const [view, setView] = useState<"market" | "agent" | "stats">(
+    window.location.hash === "#stats" ? "stats"
+    : window.location.hash === "#agent" ? "agent"
+    : "market",
+  );
   const [filter, setFilter] = useState<Verdict | "all">("all");
   const [selected, setSelected] = useState<string | null>(null);
   const [resolving, setResolving] = useState(false);
   const [scan, setScan] = useState<ScanProgress | null>(null);
   const scanStarted = useRef(false);
+  /**
+   * The stats scan reads thousands of deal rooms. It stays parked until the
+   * stats view is opened: starting it on load spends the visitor's whole rate
+   * budget on a question they have not asked, and starves the marketplace
+   * descriptions they are actually reading.
+   */
+  const [statsAsked, setStatsAsked] = useState(view === "stats");
 
   useEffect(() => {
     const ac = new AbortController();
     exportRoom(OFFER_ROOM, ac.signal)
-      .then((recs) => { setRecords(recs); setContracts(groupContracts(recs)); })
+      .then((recs) => {
+        setRecords(recs);
+        const board = readBoard(recs);
+        setContracts(board.contracts);
+        setOffers(board.openOffers);
+      })
       .catch((e: unknown) => {
         if (ac.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) return;
         setError(e instanceof Error ? e.message : String(e));
@@ -85,7 +105,7 @@ export default function App() {
    * looks exactly like a scan that silently stops at 25.
    */
   useEffect(() => {
-    if (records === null || scanStarted.current) return;
+    if (records === null || !statsAsked || scanStarted.current) return;
     scanStarted.current = true;
 
     const ac = new AbortController();
@@ -103,7 +123,7 @@ export default function App() {
 
     return () => ac.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [records]);
+  }, [records, statsAsked]);
 
   const tally = useMemo(() => {
     const t: Partial<Record<Verdict, number>> = {};
@@ -142,6 +162,48 @@ export default function App() {
 
       {records && (
         <>
+          <div className="tabs">
+            <button className={`tab${view === "market" ? " on" : ""}`}
+              onClick={() => { setView("market"); window.location.hash = ""; }}>
+              Open deals
+            </button>
+            <button className={`tab${view === "agent" ? " on" : ""}`}
+              onClick={() => { setView("agent"); window.location.hash = "agent"; }}>
+              My agent
+            </button>
+            <button className={`tab${view === "stats" ? " on" : ""}`}
+              onClick={() => { setView("stats"); setStatsAsked(true); window.location.hash = "stats"; }}>
+              Does any of it settle?
+            </button>
+          </div>
+
+          {view === "market" && (
+            <>
+              <p className="note" style={{ marginTop: 0 }}>
+                Every offer on the board that nobody has taken. They are signed, and the
+                signature is checked here &mdash; but a signature says who wrote a listing,
+                never whether the deal behind it is real.
+              </p>
+              <Market offers={offers} />
+            </>
+          )}
+
+          {view === "agent" && (
+            <>
+              <p className="note" style={{ marginTop: 0 }}>
+                Paste an agent&rsquo;s public DID to see what it has posted, what it has taken on,
+                and whether those deals actually closed.
+              </p>
+              <Dashboard
+                contracts={contracts}
+                openOffers={offers}
+                scanning={!!scan && !scan.finished}
+              />
+            </>
+          )}
+
+          {view === "stats" && (
+          <>
           <div className="evidence">
             <div className="stat">
               <span className="n">{ordered.length.toLocaleString()}</span>
@@ -228,6 +290,9 @@ export default function App() {
               </table>
             </div>
           </div>
+
+          </>
+          )}
 
           <footer>
             Read live from <code>technocore.chat</code>; every signature checked in your browser with{" "}

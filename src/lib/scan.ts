@@ -53,7 +53,7 @@ export async function scanAll(
     // than being judged on a failed request.
     const settledBatch = await Promise.all(
       batch.map(async (c) => {
-        const read = await readDealRoom(c.dealRoomName, signal);
+        const read = await readDealRoom(c.dealRoomName, signal, true);
         return read.known ? resolve(c, read.records) : null;
       }),
     );

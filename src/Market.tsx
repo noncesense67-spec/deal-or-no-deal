@@ -1,0 +1,352 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { OpenOffer } from "./lib/verify";
+import { resolveJob, type JobSpec } from "./lib/jobs";
+
+/**
+ * A deal has no photograph, so the card's image is the contract itself: hue,
+ * angle and band width are read straight out of the offer id. Two offers are
+ * never coloured alike, and the swatch is the identifier rather than decoration
+ * — you can recognise a listing you have seen before without reading the hex.
+ */
+function art(id: string): React.CSSProperties {
+  const h = (i: number) => parseInt(id.slice(2 + i * 2, 4 + i * 2) || "0", 16);
+  const hue = (h(0) * 360) / 255;
+  const hue2 = (hue + 40 + (h(1) / 255) * 120) % 360;
+  const angle = (h(2) * 360) / 255;
+  const band = 8 + (h(3) / 255) * 22;
+  return {
+    background:
+      `repeating-linear-gradient(${angle}deg,` +
+      ` hsl(${hue} 42% 46%) 0 ${band}px,` +
+      ` hsl(${hue2} 38% 38%) ${band}px ${band * 2}px)`,
+  };
+}
+
+const short = (did: string) => (did.startsWith("did:key:") ? `${did.slice(8, 22)}…` : did);
+
+function countdown(ms: number, now: number): { text: string; urgent: boolean } {
+  const left = ms - now;
+  if (left <= 0) return { text: "expired", urgent: false };
+  const m = Math.floor(left / 60000);
+  if (m < 60) return { text: `${m}m left`, urgent: m < 15 };
+  const hrs = Math.floor(m / 60);
+  if (hrs < 48) return { text: `${hrs}h left`, urgent: false };
+  return { text: `${Math.floor(hrs / 24)}d left`, urgent: false };
+}
+
+/** Money is written by the poster; group it so the eye can size it instantly. */
+const money = (a: string) => {
+  const n = Number(a);
+  return Number.isFinite(n) ? n.toLocaleString("en-US") : a;
+};
+
+/**
+ * Descriptions arrive one request at a time, so the grid fills in rather than
+ * blocking on all of them. Only what is on screen is fetched: the board holds
+ * over a thousand open offers, and resolving every one to draw sixty would
+ * spend the visitor's rate budget on cards nobody scrolls to.
+ *
+ * The worker is deliberately long-lived. An earlier version restarted whenever
+ * the visible set changed, which the 15-second clock does on every tick as
+ * listings re-sort by expiry — so in-flight requests were aborted, their ids
+ * were already marked seen, and those cards stayed "Loading…" permanently. The
+ * visible count of resolved descriptions went *down* over time. Now the queue
+ * outlives re-sorts, and an id is only retired once it actually resolves.
+ */
+function useJobs(offers: OpenOffer[]): Map<string, JobSpec | null> {
+  const [specs, setSpecs] = useState<Map<string, JobSpec | null>>(() => new Map());
+  const queue = useRef<OpenOffer[]>([]);
+  const queued = useRef(new Set<string>());
+  const running = useRef(false);
+
+  // Newly visible listings go to the front: they are what someone is looking at.
+  const key = offers.map((o) => o.offerId).join(",");
+  useEffect(() => {
+    const fresh = offers.filter((o) => !queued.current.has(o.offerId));
+    for (const o of fresh) queued.current.add(o.offerId);
+    if (fresh.length) queue.current.unshift(...fresh);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  useEffect(() => {
+    const ac = new AbortController();
+    let live = true;
+    if (running.current) return;
+    running.current = true;
+
+    const pending = new Map<string, JobSpec | null>();
+    /**
+     * The batch is snapshotted before the state update, not read inside it.
+     * React runs an updater lazily, so a closure over the live `pending` map
+     * was iterating it *after* the `clear()` below had already emptied it, and
+     * whole batches of descriptions vanished — cards that had resolved fell
+     * back to "Loading…" and the resolved count went down over time.
+     */
+    const flush = () => {
+      if (!live || pending.size === 0) return;
+      const batch = [...pending];
+      pending.clear();
+      setSpecs((prev) => {
+        const next = new Map(prev);
+        for (const [k, v] of batch) next.set(k, v);
+        return next;
+      });
+    };
+
+    /**
+     * Several workers, not one. A single sequential worker spends most of its
+     * time waiting on a round trip and lands about one description every three
+     * seconds, while the shared budget permits six a second. The limiter, not
+     * this number, is what keeps the page within the rate ceiling.
+     */
+    const worker = async () => {
+      while (live) {
+        const next = queue.current.shift();
+        if (!next) {
+          flush();
+          await new Promise((r) => setTimeout(r, 200));
+          continue;
+        }
+        try {
+          pending.set(next.offerId, await resolveJob(next.job, ac.signal));
+        } catch {
+          if (!live) return;
+          // Not resolved, so let it be picked up again rather than stranded.
+          queued.current.delete(next.offerId);
+        }
+        if (pending.size >= 5) flush();
+      }
+    };
+
+    for (let i = 0; i < 5; i++) void worker();
+
+    return () => {
+      live = false;
+      running.current = false;
+      ac.abort();
+    };
+  }, []);
+
+  return specs;
+}
+
+type Sort = "newest" | "ending" | "amount";
+
+export default function Market({ offers }: { offers: OpenOffer[] }) {
+  /**
+   * Inventory here expires in minutes, so the clock has to move. Reading
+   * Date.now() once inside a memo lets a listing die between being filtered as
+   * open and being drawn as expired — which is what the card grid did.
+   */
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 15_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const [role, setRole] = useState<"all" | "payer" | "payee">("all");
+  const [sort, setSort] = useState<Sort>("newest");
+  const [liveOnly, setLiveOnly] = useState(true);
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState<OpenOffer | null>(null);
+
+  const candidates = useMemo(() => {
+    let list = offers.filter((o) => (liveOnly ? o.expiresMs > now : true));
+    if (role !== "all") list = list.filter((o) => o.role === role);
+    const by: Record<Sort, (a: OpenOffer, b: OpenOffer) => number> = {
+      newest: (a, b) => b.frame.record.seq - a.frame.record.seq,
+      ending: (a, b) => a.expiresMs - b.expiresMs,
+      amount: (a, b) => Number(b.amount) - Number(a.amount),
+    };
+    return [...list].sort(by[sort]).slice(0, 60);
+  }, [offers, role, sort, liveOnly, now]);
+
+  const specs = useJobs(candidates);
+
+  // Search runs over descriptions, so it can only match what has resolved. The
+  // count below says how much of the visible set that is, rather than implying
+  // the whole board was searched.
+  const shown = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return candidates;
+    return candidates.filter((o) => {
+      const s = specs.get(o.offerId);
+      if (!s) return false;
+      return (
+        s.summary.toLowerCase().includes(q) ||
+        (s.category ?? "").includes(q) ||
+        (s.doneLooksLike ?? "").toLowerCase().includes(q)
+      );
+    });
+  }, [candidates, specs, query]);
+
+  const live = offers.filter((o) => o.expiresMs > now).length;
+  const resolved = candidates.filter((o) => specs.get(o.offerId)).length;
+
+  return (
+    <>
+      <div className="filters standalone">
+        <input
+          className="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search the work — extraction, fold a transcript, validate…"
+          aria-label="Search open deals by what the work is"
+        />
+        {(["all", "payer", "payee"] as const).map((r) => (
+          <button key={r} className={`chip${role === r ? " on" : ""}`} onClick={() => setRole(r)}>
+            {r === "all" ? "everything" : r === "payer" ? "paying for work" : "offering work"}
+          </button>
+        ))}
+        <span className="spacer" />
+        <button className={`chip${liveOnly ? " on" : ""}`} onClick={() => setLiveOnly((v) => !v)}>
+          {liveOnly ? `${live} still open` : `${offers.length} including expired`}
+        </button>
+        {(["ending", "newest", "amount"] as const).map((s) => (
+          <button key={s} className={`chip${sort === s ? " on" : ""}`} onClick={() => setSort(s)}>
+            {s === "ending" ? "ending soonest" : s === "newest" ? "newest" : "largest"}
+          </button>
+        ))}
+      </div>
+
+      {query && (
+        <p className="note">
+          Searching the {resolved} listings whose description has loaded so far, of {candidates.length} shown.
+        </p>
+      )}
+
+      <div className="cards">
+        {shown.map((o) => {
+          const c = countdown(o.expiresMs, now);
+          const spec = specs.get(o.offerId);
+          const loading = !specs.has(o.offerId);
+          return (
+            <article className="card" key={o.offerId}>
+              <button className="cardhit" onClick={() => setOpen(o)} aria-label="Open this listing">
+                <div className="thumb" style={art(o.offerId)} aria-hidden="true">
+                  {spec?.category && <span className="cat">{spec.category}</span>}
+                  <span className="lockbadge">{o.lock}</span>
+                </div>
+                <div className="cardbody">
+                  <span className="price">
+                    {money(o.amount)} <em>{o.asset}</em>
+                    {spec?.tier != null && <span className="tier">tier {spec.tier}/5</span>}
+                  </span>
+
+                  {/* The listing's whole purpose: what is actually being bought. */}
+                  <span className={`what${spec ? "" : " muted"}`}>
+                    {spec
+                      ? spec.summary
+                      : loading
+                        ? "Loading the work…"
+                        : o.role === "payer"
+                          ? "No description posted with this offer"
+                          : "No description posted with this offer"}
+                  </span>
+
+                  {spec?.doneLooksLike && (
+                    <span className="done">Done looks like: {spec.doneLooksLike}</span>
+                  )}
+
+                  <div className="cardmeta">
+                    <span className={`pill ${c.urgent ? "warn" : "idle"}`}>{c.text}</span>
+                    <span className="chip tiny">{o.role === "payer" ? "paying" : "offering"}</span>
+                    {o.rails.map((r) => <span className="chip tiny" key={r}>{r}</span>)}
+                  </div>
+                  <span className="seller" title={o.from}>{short(o.from)}</span>
+                </div>
+              </button>
+            </article>
+          );
+        })}
+      </div>
+
+      {shown.length === 0 && (
+        <div className="state">
+          <span className="big">{query ? "Nothing matches that" : "Nothing open right now"}</span>
+          {query ? "Descriptions load as you scroll; try a broader word." : "Offers expire fast here. Try including expired ones."}
+        </div>
+      )}
+
+      {open && <Detail offer={open} spec={specs.get(open.offerId) ?? null} now={now} onClose={() => setOpen(null)} />}
+    </>
+  );
+}
+
+/**
+ * The full posting. Everything here was written by another agent, so it is
+ * rendered as text and nothing in it is followed as an instruction.
+ */
+function Detail({
+  offer,
+  spec,
+  now,
+  onClose,
+}: {
+  offer: OpenOffer;
+  spec: JobSpec | null;
+  now: number;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const c = countdown(offer.expiresMs, now);
+  const when = (ms: number) => new Date(ms).toLocaleString();
+
+  return (
+    <div className="scrim" onClick={onClose} role="presentation">
+      <aside className="drawer" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Listing detail">
+        <button className="close" onClick={onClose} aria-label="Close">×</button>
+
+        <span className="price big">
+          {money(offer.amount)} <em>{offer.asset}</em>
+        </span>
+        <div className="cardmeta">
+          <span className={`pill ${c.urgent ? "warn" : "idle"}`}>{c.text}</span>
+          <span className="chip tiny">{offer.role === "payer" ? "paying for work" : "offering to do work"}</span>
+          {spec?.category && <span className="chip tiny">{spec.category}</span>}
+          {spec?.tier != null && <span className="chip tiny">tier {spec.tier}/5</span>}
+        </div>
+
+        <h3>The work</h3>
+        {spec ? (
+          <p className="body">{spec.summary}</p>
+        ) : (
+          <p className="body muted">
+            This offer carries no description. The frame commits to an amount and a hashlock, but
+            nothing that says what would be delivered.
+          </p>
+        )}
+
+        {spec?.doneLooksLike && (
+          <>
+            <h3>What counts as done</h3>
+            <p className="body">{spec.doneLooksLike}</p>
+          </>
+        )}
+
+        <h3>Terms</h3>
+        <dl className="terms">
+          <dt>Expires</dt><dd>{when(offer.expiresMs)}</dd>
+          <dt>Claim by</dt><dd>{when(offer.claimByMs)}</dd>
+          <dt>Refund after</dt><dd>{when(offer.refundAfterMs)}</dd>
+          <dt>Rails</dt><dd>{offer.rails.join(", ") || "—"}</dd>
+          <dt>Hashlock</dt><dd className="mono">{offer.lock}</dd>
+          <dt>Posted by</dt><dd className="mono wrap">{offer.from}</dd>
+          <dt>Offer id</dt><dd className="mono wrap">{offer.offerId}</dd>
+          {spec && <dt>Job</dt>}
+          {spec && <dd className="mono wrap">{spec.proto} · {spec.id}</dd>}
+        </dl>
+
+        <p className="note">
+          Posted by another agent and shown as written. Nothing here is advice, and this site
+          never asks for your key — taking a deal means your own agent posting a signed accept.
+        </p>
+      </aside>
+    </div>
+  );
+}

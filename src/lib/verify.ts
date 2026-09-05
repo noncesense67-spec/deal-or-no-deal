@@ -18,6 +18,7 @@ import { ed25519 } from "@noble/curves/ed25519";
 import { base58 } from "@scure/base";
 import { decodeFrame, dealRoom, openContract, applyFrame, OFFER_ROOM } from "@flop-labs/tclk";
 import type { ExportedRecord } from "./technocore";
+import type { JobBinding } from "./jobs.ts";
 
 /** Frame types the public board may legitimately carry. */
 const BOARD_TYPES = new Set(["offer", "accept", "cancel"]);
@@ -125,6 +126,31 @@ export const VERDICT_TONE: Record<Verdict, "ok" | "warn" | "void" | "idle"> = {
   misrouted: "void",
 };
 
+/**
+ * An offer nobody has accepted yet.
+ *
+ * These never reach the contract map: a contract id hashes the offer AND the
+ * acceptance, so an untaken offer has only its own `id` and no `contract` field
+ * to group under. Listing them needs a separate pass — which is the whole
+ * marketplace, and it was invisible until now.
+ */
+export interface OpenOffer {
+  offerId: string;
+  /** The optional binding to the work itself; resolved separately, see jobs.ts. */
+  job?: JobBinding;
+  frame: CheckedFrame;
+  from: string;
+  amount: string;
+  asset: string;
+  rails: string[];
+  lock: string;
+  /** Which side the poster takes: `payer` pays, `payee` does the work. */
+  role: string;
+  expiresMs: number;
+  claimByMs: number;
+  refundAfterMs: number;
+}
+
 export interface Contract {
   id: string;
   boardFrames: CheckedFrame[];
@@ -150,7 +176,17 @@ export interface Contract {
  * different keys, leaves every contract without its offer, and makes the fold
  * silently impossible — which reads as "nothing ever settles".
  */
+export interface BoardState {
+  contracts: Map<string, Contract>;
+  /** Offers with no acceptance against them, newest first. */
+  openOffers: OpenOffer[];
+}
+
 export function groupContracts(records: ExportedRecord[]): Map<string, Contract> {
+  return readBoard(records).contracts;
+}
+
+export function readBoard(records: ExportedRecord[]): BoardState {
   const checked: CheckedFrame[] = [];
   const offersById = new Map<string, CheckedFrame>();
 
@@ -195,7 +231,35 @@ export function groupContracts(records: ExportedRecord[]): Map<string, Contract>
     c.misplaced = c.boardFrames.filter((f) => !f.roomCorrect);
     c.verdict = provisional(c);
   }
-  return out;
+
+  // Anything still unspoken for: an offer whose id no acceptance refers to.
+  const taken = new Set<string>();
+  for (const f of checked) {
+    if (typeof f.frame.ref === "string") taken.add(f.frame.ref);
+  }
+
+  const num = (v: unknown) => (typeof v === "number" ? v : 0);
+  const openOffers: OpenOffer[] = [];
+  for (const [id, f] of offersById) {
+    if (taken.has(id) || !f.signatureValid) continue;
+    openOffers.push({
+      offerId: id,
+      job: (f.frame as { job?: JobBinding }).job,
+      frame: f,
+      from: f.record.from,
+      amount: String(f.frame.amount ?? "0"),
+      asset: String(f.frame.asset ?? ""),
+      rails: Array.isArray(f.frame.rails) ? (f.frame.rails as string[]) : [],
+      lock: String(f.frame.lock ?? ""),
+      role: String(f.frame.role ?? ""),
+      expiresMs: num(f.frame.expiresMs),
+      claimByMs: num(f.frame.claimByMs),
+      refundAfterMs: num(f.frame.refundAfterMs),
+    });
+  }
+  openOffers.sort((a, b) => b.frame.record.seq - a.frame.record.seq);
+
+  return { contracts: out, openOffers };
 }
 
 /** What the board alone can support. Never claims settlement. */
