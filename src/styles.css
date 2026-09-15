@@ -418,3 +418,206 @@ table.board td.muted { color: var(--muted); }
 .verdict-card.good    { border-left-color: var(--ok);   background: var(--ok-soft); }
 .verdict-card.bad     { border-left-color: var(--void); background: var(--void-soft); }
 .verdict-card.unknown { border-left-color: var(--muted); }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   MOBILE FIRST — phones are the primary audience.
+
+   Everything above this point was written desktop-first; rather than unpick
+   it, this section states the phone layout plainly and then widens. The rules
+   below are the base (no media query), so a phone never downloads a desktop
+   grid and then fights it.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.wrap { padding: 16px 14px 56px; max-width: 880px; margin: 0 auto; }
+
+/* 16px minimum on any input, or iOS zooms the whole page on focus. */
+input, .search, button { font-size: 16px; }
+
+/* Tabs become a sticky segmented control — the primary navigation on a phone
+   should not scroll away when you are three screens into a ranking. */
+.tabs {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; gap: 4px;
+  margin: 0 -14px 20px; padding: 10px 14px;
+  background: color-mix(in srgb, var(--ground) 92%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line-soft);
+  overflow-x: auto; -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.tabs::-webkit-scrollbar { display: none; }
+.tab {
+  flex: 0 0 auto;
+  min-height: 40px; padding: 8px 14px;
+  border: 1px solid transparent; border-radius: 999px;
+  background: transparent; color: var(--muted);
+  font: 600 14px/1.2 var(--sans); white-space: nowrap; cursor: pointer;
+}
+.tab.on { background: var(--accent); color: var(--surface); border-color: var(--accent); }
+
+/* One column. A two-up grid on a 390px screen makes every card unreadable. */
+.cards { display: flex; flex-direction: column; gap: 12px; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.cardhit {
+  display: flex; flex-direction: column; gap: 9px;
+  width: 100%; padding: 14px;
+  border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.cardtop { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* The identity chip: recognisable, not decorative. */
+.chipart {
+  flex: 0 0 auto; width: 34px; height: 34px;
+  border-radius: 9px; box-shadow: inset 0 0 0 1px rgb(0 0 0 / .18);
+}
+.cardtop .price { flex: 1 1 auto; font-size: 21px; }
+.cardtop .pill { flex: 0 0 auto; }
+
+/* Filters wrap and stay thumb-sized. */
+.filters { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 16px; }
+.filters .spacer { display: none; }
+.chip {
+  min-height: 36px; padding: 7px 13px;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--surface); color: var(--muted);
+  font: 500 13.5px/1.3 var(--sans); cursor: pointer;
+}
+.chip.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.chip.tiny { min-height: 0; padding: 3px 8px; font: 500 11px/1.4 var(--mono); border-radius: 4px; }
+
+/* The drawer becomes a bottom sheet — a side panel is wrong on a phone. */
+.scrim { align-items: flex-end; justify-content: center; }
+.drawer {
+  width: 100%; max-height: 88vh; height: auto;
+  border-left: 0; border-top: 1px solid var(--line);
+  border-radius: 18px 18px 0 0;
+  padding: 22px 18px 34px;
+  animation: sheet .22s cubic-bezier(.2,.8,.3,1);
+}
+@keyframes sheet { from { transform: translateY(12%); opacity: .6 } to { transform: none; opacity: 1 } }
+@media (prefers-reduced-motion: reduce) { .drawer { animation: none } }
+.drawer::before {
+  content: ""; display: block; width: 36px; height: 4px; margin: -8px auto 14px;
+  background: var(--line); border-radius: 2px;
+}
+
+/* The headline number carries the whole finding; let it be big. */
+.headline { grid-template-columns: 1fr; grid-template-areas: "huge" "of" "text"; gap: 2px; padding: 20px 18px; border-radius: 14px; }
+.headline .huge { font-size: 64px; line-height: .95; }
+
+.copybtn { min-height: 46px; }
+.stats { grid-template-columns: repeat(2, 1fr); }
+.tablewrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 0 -14px; padding: 0 14px; }
+
+/* ── Wider screens get the grid back ──────────────────────────────────── */
+@media (min-width: 720px) {
+  .wrap { padding: 28px 24px 72px; }
+  .tabs { position: static; margin: 0 0 24px; padding: 0 0 2px; background: none; backdrop-filter: none; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 14px; }
+  .filters .spacer { display: block; flex: 1 1 auto; }
+  .scrim { align-items: stretch; justify-content: flex-end; }
+  .drawer {
+    width: min(460px, 100%); height: 100%; max-height: none;
+    border-radius: 0; border-left: 1px solid var(--line); border-top: 0;
+    padding: 28px 26px 40px; animation: none;
+  }
+  .drawer::before { display: none; }
+  .headline { grid-template-columns: auto 1fr; grid-template-areas: "huge of" "huge text"; gap: 0 18px; }
+  .headline .huge { font-size: 76px; }
+  .stats { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   CHARACTER PASS
+
+   The page was legible and forgettable. Three problems, in order of cost:
+   the masthead ate 450px of an 812px phone before a single number appeared;
+   the finding — the one thing worth knowing — was set at body weight; and a
+   ranking about trust looked like a spreadsheet.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* Masthead: compact on a phone, generous once there is room to be. */
+.top { margin: 0 0 18px; }
+.top .eyebrow { margin: 0 0 6px; font: 600 10.5px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--accent); }
+.top h1 { margin: 0; font: 400 clamp(30px, 9vw, 46px)/1.02 var(--display); letter-spacing: -.02em; }
+.top .standfirst {
+  margin: 8px 0 0; color: var(--muted);
+  font-size: 14.5px; line-height: 1.55; max-width: 56ch;
+  /* Two lines on a phone, with the rest a tap away — the thesis should not
+     outrank the evidence on first paint. */
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+@media (min-width: 720px) { .top .standfirst { -webkit-line-clamp: unset; display: block; } }
+
+/* The finding, given the weight of a finding. */
+.headline {
+  position: relative;
+  background: linear-gradient(160deg, var(--surface), var(--accent-soft));
+  border-color: var(--accent-soft);
+  overflow: hidden;
+}
+.headline::after {
+  /* A quiet ledger rule behind the number — texture, not decoration. */
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: repeating-linear-gradient(0deg, transparent 0 21px, color-mix(in srgb, var(--accent) 7%, transparent) 21px 22px);
+  mask-image: linear-gradient(90deg, transparent, #000 60%);
+}
+.headline .huge {
+  font-weight: 400; letter-spacing: -.04em;
+  text-shadow: 0 1px 0 color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.headline .of { color: var(--accent); }
+.headline p { position: relative; }
+
+/* Ranking: the top three earn a mark, the rest earn a number. */
+table.board td.rank { width: 2.4rem; font: 600 13px/1 var(--mono); color: var(--faint); }
+table.board tbody tr:nth-child(-n+3) td.rank { color: var(--accent); font-size: 15px; }
+/* A left rule rather than a glyph: a ::after dot wrapped onto its own line in
+   a 2.4rem cell, which read as a rendering bug rather than a rank. */
+table.board tbody tr:nth-child(-n+3) td.rank {
+  box-shadow: inset 3px 0 0 var(--accent);
+  padding-left: 12px;
+}
+table.board tbody tr:nth-child(2) td.rank { box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 62%, transparent); }
+table.board tbody tr:nth-child(3) td.rank { box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 34%, transparent); }
+table.board tbody tr:nth-child(-n+3) td.did { font-weight: 600; }
+table.board tr.pick:active td { background: var(--accent-soft); }
+
+/* Reliability reads as a gauge, not a progress bar. */
+.ratebar { height: 22px; border-radius: 4px; overflow: hidden; border: 1px solid var(--line-soft); }
+.ratebar .fill { transition: width .4s cubic-bezier(.2,.8,.3,1); }
+.ratebar .fill.high { background: linear-gradient(90deg, var(--ok), color-mix(in srgb, var(--ok) 72%, var(--accent))); }
+.ratebar .fill.mid  { background: linear-gradient(90deg, var(--warn), color-mix(in srgb, var(--warn) 70%, var(--void))); }
+.ratebar .pct { line-height: 22px; font-weight: 600; mix-blend-mode: normal; }
+@media (prefers-reduced-motion: reduce) { .ratebar .fill { transition: none } }
+
+/* Verdicts should look like verdicts. */
+.trust { border-radius: 999px; font-weight: 600; }
+.trust.bad::before  { content: "✕ "; }
+.trust.good::before { content: "✓ "; }
+.trust.unknown::before { content: "? "; }
+
+/* Cards lift slightly on touch so a tap feels like it landed. */
+.card { transition: transform .12s ease, border-color .12s ease; }
+.card:active { transform: scale(.995); border-color: var(--accent); }
+@media (prefers-reduced-motion: reduce) { .card { transition: none } .card:active { transform: none } }
+
+/* The price is the second thing you read; give it presence. */
+.price { font-family: var(--display); letter-spacing: -.01em; }
+.price em { font-family: var(--mono); font-style: normal; font-size: .58em; color: var(--muted); letter-spacing: .04em; }
+
+/* Filters: one decision visible, the rest one tap away. */
+.filters.standalone { align-items: center; }
+.filters.standalone .search { flex: 1 1 100%; margin-bottom: 2px; }
+.chip.more { border-style: dashed; }
+.filters.drawerfilters {
+  margin: -8px 0 16px; padding: 12px;
+  background: var(--surface-2); border: 1px solid var(--line-soft); border-radius: 10px;
+}
+@media (min-width: 720px) { .filters.standalone .search { flex: 1 1 260px; margin-bottom: 0; } }

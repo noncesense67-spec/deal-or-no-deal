@@ -55,17 +55,23 @@ function workOrder(offer: OpenOffer, spec: JobSpec | null, rep: BoardReputation)
  * never coloured alike, and the swatch is the identifier rather than decoration
  * — you can recognise a listing you have seen before without reading the hex.
  */
+/**
+ * A contract has no photograph, so its id becomes a small identity chip: hue and
+ * angle read straight out of the hex. It exists to make a listing recognisable
+ * at a glance, nothing more.
+ *
+ * It used to be a 16:6 hero banner above every card, which made the loudest
+ * element on a trust page a decorative gradient — the eye went to the artwork
+ * instead of to whether the payer has ever paid. Shrunk to a 40px chip beside
+ * the price, it still identifies and no longer competes.
+ */
 function art(id: string): React.CSSProperties {
   const h = (i: number) => parseInt(id.slice(2 + i * 2, 4 + i * 2) || "0", 16);
   const hue = (h(0) * 360) / 255;
   const hue2 = (hue + 40 + (h(1) / 255) * 120) % 360;
   const angle = (h(2) * 360) / 255;
-  const band = 8 + (h(3) / 255) * 22;
   return {
-    background:
-      `repeating-linear-gradient(${angle}deg,` +
-      ` hsl(${hue} 42% 46%) 0 ${band}px,` +
-      ` hsl(${hue2} 38% 38%) ${band}px ${band * 2}px)`,
+    background: `linear-gradient(${angle}deg, hsl(${hue} 55% 52%), hsl(${hue2} 50% 42%))`,
   };
 }
 
@@ -239,6 +245,7 @@ export default function Market({ offers, reputation }: { offers: OpenOffer[]; re
   const [sort, setSort] = useState<Sort>("newest");
   const [liveOnly, setLiveOnly] = useState(true);
   const [trustedOnly, setTrustedOnly] = useState(false);
+  const [showFilters, setShowFilters] = useState(false);
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState<OpenOffer | null>(null);
 
@@ -286,27 +293,40 @@ export default function Market({ offers, reputation }: { offers: OpenOffer[]; re
           className="search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search the work — extraction, fold a transcript, validate…"
-          aria-label="Search open deals by what the work is"
+          placeholder="Search the work…"
+          aria-label="Search open offers by what the work is"
         />
-        {(["all", "payer", "payee"] as const).map((r) => (
-          <button key={r} className={`chip${role === r ? " on" : ""}`} onClick={() => setRole(r)}>
-            {r === "all" ? "everything" : r === "payer" ? "paying for work" : "offering work"}
-          </button>
-        ))}
+        {/* The only filter that changes a decision stays visible; seven chips
+            filled a phone screen before a single offer appeared. */}
         <button className={`chip${trustedOnly ? " on" : ""}`} onClick={() => setTrustedOnly((v) => !v)}>
           {trustedOnly ? "only payers who honour" : "all payers"}
         </button>
-        <span className="spacer" />
-        <button className={`chip${liveOnly ? " on" : ""}`} onClick={() => setLiveOnly((v) => !v)}>
-          {liveOnly ? `${live} still open` : `${offers.length} including expired`}
+        <button
+          className={`chip more${showFilters ? " on" : ""}`}
+          onClick={() => setShowFilters((v) => !v)}
+          aria-expanded={showFilters}
+        >
+          {showFilters ? "fewer" : "sort & filter"}
         </button>
-        {(["ending", "newest", "amount"] as const).map((s) => (
-          <button key={s} className={`chip${sort === s ? " on" : ""}`} onClick={() => setSort(s)}>
-            {s === "ending" ? "ending soonest" : s === "newest" ? "newest" : "largest"}
-          </button>
-        ))}
       </div>
+
+      {showFilters && (
+        <div className="filters drawerfilters">
+          {(["all", "payer", "payee"] as const).map((r) => (
+            <button key={r} className={`chip${role === r ? " on" : ""}`} onClick={() => setRole(r)}>
+              {r === "all" ? "everything" : r === "payer" ? "paying for work" : "offering work"}
+            </button>
+          ))}
+          <button className={`chip${liveOnly ? " on" : ""}`} onClick={() => setLiveOnly((v) => !v)}>
+            {liveOnly ? `${live} still open` : `${offers.length} incl. expired`}
+          </button>
+          {(["ending", "newest", "amount"] as const).map((s) => (
+            <button key={s} className={`chip${sort === s ? " on" : ""}`} onClick={() => setSort(s)}>
+              {s === "ending" ? "ending soonest" : s === "newest" ? "newest" : "largest"}
+            </button>
+          ))}
+        </div>
+      )}
 
       {query && (
         <p className="note">
@@ -322,44 +342,32 @@ export default function Market({ offers, reputation }: { offers: OpenOffer[]; re
           return (
             <article className="card" key={o.offerId}>
               <button className="cardhit" onClick={() => setOpen(o)} aria-label="Open this listing">
-                <div className="thumb" style={art(o.offerId)} aria-hidden="true">
-                  {spec?.category && <span className="cat">{spec.category}</span>}
-                  <span className="lockbadge">{o.lock}</span>
-                </div>
-                <div className="cardbody">
+                <div className="cardtop">
+                  <span className="chipart" style={art(o.offerId)} aria-hidden="true" />
                   <span className="price">
                     {money(o.amount)} <em>{o.asset}</em>
-                    {spec?.tier != null && <span className="tier">tier {spec.tier}/5</span>}
                   </span>
+                  <span className={`pill ${c.urgent ? "warn" : "idle"}`}>{c.text}</span>
+                </div>
 
-                  {/* The listing's whole purpose: what is actually being bought. */}
-                  <span className={`what${spec ? "" : " muted"}`}>
-                    {spec
-                      ? spec.summary
-                      : loading
-                        ? "Loading the work…"
-                        : o.role === "payer"
-                          ? "No description posted with this offer"
-                          : "No description posted with this offer"}
-                  </span>
+                {/* The judgement, given the weight the artwork used to take. */}
+                {(() => {
+                  const rep = reputationLabel(payerRecord(reputation, o.from));
+                  return <span className={`trust ${rep.tone}`}>{rep.text}</span>;
+                })()}
 
-                  {spec?.doneLooksLike && (
-                    <span className="done">Done looks like: {spec.doneLooksLike}</span>
-                  )}
+                <span className={`what${spec ? "" : " muted"}`}>
+                  {spec
+                    ? spec.summary
+                    : loading
+                      ? "Loading the work…"
+                      : "No description posted with this offer"}
+                </span>
 
-                  {/* The judgement that matters: an amount means nothing if the
-                      payer has never once locked a payment. */}
-                  {(() => {
-                    const rep = reputationLabel(payerRecord(reputation, o.from));
-                    return <span className={`trust ${rep.tone}`}>{rep.text}</span>;
-                  })()}
-
-                  <div className="cardmeta">
-                    <span className={`pill ${c.urgent ? "warn" : "idle"}`}>{c.text}</span>
-                    <span className="chip tiny">{o.role === "payer" ? "paying" : "offering"}</span>
-                    {o.rails.map((r) => <span className="chip tiny" key={r}>{r}</span>)}
-                  </div>
-                  <span className="seller" title={o.from}>{short(o.from)}</span>
+                <div className="cardmeta">
+                  {spec?.category && <span className="chip tiny">{spec.category}</span>}
+                  {spec?.tier != null && <span className="chip tiny">tier {spec.tier}/5</span>}
+                  {o.rails.map((r) => <span className="chip tiny" key={r}>{r}</span>)}
                 </div>
               </button>
             </article>

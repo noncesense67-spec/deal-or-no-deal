@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { exportRoom, readDealRoom, type ExportedRecord } from "./lib/technocore";
-import { scanAll, type ScanProgress } from "./lib/scan";
 import {
   readBoard, resolve, VERDICT_LABEL, VERDICT_TONE,
   type Contract, type Verdict, type OpenOffer,
@@ -28,26 +27,18 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [contracts, setContracts] = useState<Map<string, Contract>>(new Map());
   const [offers, setOffers] = useState<OpenOffer[]>([]);
-  const [view, setView] = useState<"board" | "market" | "agent" | "stats">(
-    window.location.hash === "#stats" ? "stats"
-    : window.location.hash === "#agent" ? "agent"
+  const [view, setView] = useState<"board" | "market" | "agent">(
+    window.location.hash === "#agent" ? "agent"
     : window.location.hash === "#market" ? "market"
     : "board",
   );
   /** Which agent the lookup view opens on, when arrived at from a ranking row. */
   const [lookupDid, setLookupDid] = useState<string | undefined>(undefined);
-  const [filter, setFilter] = useState<Verdict | "all">("all");
-  const [selected, setSelected] = useState<string | null>(null);
-  const [resolving, setResolving] = useState(false);
-  const [scan, setScan] = useState<ScanProgress | null>(null);
-  const scanStarted = useRef(false);
   /**
-   * The stats scan reads thousands of deal rooms. It stays parked until the
-   * stats view is opened: starting it on load spends the visitor's whole rate
-   * budget on a question they have not asked, and starves the marketplace
-   * descriptions they are actually reading.
+   * The deal-room scan is retired along with the stats view it fed. It made
+   * thousands of requests to answer "does anything settle?" — a question the
+   * ranking now answers from the one export already in hand.
    */
-  const [statsAsked, setStatsAsked] = useState(view === "stats");
 
   useEffect(() => {
     const ac = new AbortController();
@@ -73,86 +64,6 @@ export default function App() {
     () => readReputation(records ?? []),
     [records],
   );
-
-  const ordered = useMemo(
-    () => [...contracts.values()].sort((a, b) => lastSeq(b) - lastSeq(a)),
-    [contracts],
-  );
-
-  const shown = useMemo(
-    () => (filter === "all" ? ordered : ordered.filter((c) => c.verdict === filter)).slice(0, PAGE),
-    [ordered, filter],
-  );
-
-  /**
-   * Resolve the rows on screen by reading their deal rooms. Deliberately not
-   * done for all ten thousand: a verdict costs one request, and the honest
-   * default is to admit we have not looked rather than to guess.
-   */
-  const resolveVisible = useCallback(async (batch: Contract[]) => {
-    const pending = batch.filter((c) => !c.dealRoomRead);
-    if (pending.length === 0) return;
-    setResolving(true);
-
-    const done = await Promise.all(
-      pending.map(async (c) => { const r = await readDealRoom(c.dealRoomName); return r.known ? resolve(c, r.records) : c; }),
-    );
-
-    setContracts((prev) => {
-      const next = new Map(prev);
-      for (const c of done) next.set(c.id, c);
-      return next;
-    });
-    setResolving(false);
-  }, []);
-
-  useEffect(() => { void resolveVisible(shown); }, [shown, resolveVisible]);
-
-  /**
-   * Resolve EVERY contract, in the background, streaming results as they land.
-   * A sample would be cheaper, but a tool whose entire claim is rigour should
-   * not report a percentage it did not actually measure.
-   *
-   * Guarded by a ref rather than by state. The scan updates `contracts` and
-   * `scan` as it runs, so listing either as a dependency makes the effect
-   * re-run and its own cleanup abort the scan after the first batch — which
-   * looks exactly like a scan that silently stops at 25.
-   */
-  useEffect(() => {
-    if (records === null || !statsAsked || scanStarted.current) return;
-    scanStarted.current = true;
-
-    const ac = new AbortController();
-    const pending = [...contracts.values()].filter((c) => !c.dealRoomRead);
-    setScan({ done: 0, total: pending.length, finished: pending.length === 0 });
-
-    void scanAll(pending, (resolved, progress) => {
-      setContracts((prev) => {
-        const next = new Map(prev);
-        for (const c of resolved) next.set(c.id, c);
-        return next;
-      });
-      setScan(progress);
-    }, ac.signal);
-
-    return () => ac.abort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [records, statsAsked]);
-
-  const tally = useMemo(() => {
-    const t: Partial<Record<Verdict, number>> = {};
-    for (const c of ordered) t[c.verdict] = (t[c.verdict] ?? 0) + 1;
-    return t;
-  }, [ordered]);
-
-  const checked = useMemo(() => ordered.filter((c) => c.dealRoomRead).length, [ordered]);
-  const frames = useMemo(() => ordered.reduce((n, c) => n + c.boardFrames.length, 0), [ordered]);
-  const validSigs = useMemo(
-    () => ordered.reduce((n, c) => n + c.boardFrames.filter((f) => f.signatureValid).length, 0),
-    [ordered],
-  );
-
-  const current = selected ? contracts.get(selected) ?? null : null;
 
   return (
     <div className="wrap">
@@ -188,10 +99,6 @@ export default function App() {
             <button className={`tab${view === "agent" ? " on" : ""}`}
               onClick={() => { setLookupDid(undefined); setView("agent"); window.location.hash = "agent"; }}>
               Check an agent
-            </button>
-            <button className={`tab${view === "stats" ? " on" : ""}`}
-              onClick={() => { setView("stats"); setStatsAsked(true); window.location.hash = "stats"; }}>
-              Does any of it settle?
             </button>
           </div>
 
@@ -230,105 +137,6 @@ export default function App() {
             </>
           )}
 
-          {view === "stats" && (
-          <>
-          <div className="evidence">
-            <div className="stat">
-              <span className="n">{ordered.length.toLocaleString()}</span>
-              <span className="k">contracts on the board</span>
-            </div>
-            <div className="stat">
-              <span className="n">{validSigs.toLocaleString()}</span>
-              <span className="k">of {frames.toLocaleString()} signatures valid</span>
-            </div>
-            <div className="stat">
-              <span className="n">{checked === 0 ? "—" : `${Math.round(((tally.settled ?? 0) / checked) * 100)}%`}</span>
-              <span className="k">settled &middot; {(tally.settled ?? 0).toLocaleString()} contracts</span>
-            </div>
-            <div className="stat flag">
-              <span className="n">{checked === 0 ? "—" : `${Math.round(((tally.misrouted ?? 0) / checked) * 100)}%`}</span>
-              <span className="k">misrouted &middot; {(tally.misrouted ?? 0).toLocaleString()} contracts</span>
-            </div>
-            <div className="stat">
-              <span className="n">{scan && !scan.finished ? `${Math.round((checked / Math.max(1, ordered.length)) * 100)}%` : "100%"}</span>
-              <span className="k">
-                {scan && !scan.finished
-                  ? `scanned · ${checked.toLocaleString()} of ${ordered.length.toLocaleString()} deal rooms`
-                  : `every retained contract checked`}
-              </span>
-            </div>
-          </div>
-          <p className="note">
-            Every contract is checked, not a sample &mdash; one deal-room read each, paced under the
-            venue&rsquo;s rate limit, which takes a few minutes and fills in as it goes. The figures are
-            complete for <strong>everything still retained</strong>: the board is a ring, so contracts
-            older than it are gone from the venue and nobody can judge them. Signatures are not
-            the problem here: nearly every frame verifies. The spec is what separates them, since{" "}
-            <em>a valid signature in the wrong room cannot advance state.</em>
-          </p>
-
-          {current && <Detail contract={current} />}
-
-          <div className="panel">
-            <div className="filters">
-              {(["all", "settled", "misrouted", "stalled", "unchecked", "refunded", "open"] as const).map((f) => (
-                <button
-                  key={f}
-                  className={`chip${filter === f ? " on" : ""}`}
-                  onClick={() => { setFilter(f); setSelected(null); }}
-                >
-                  {f === "all" ? `all ${ordered.length.toLocaleString()}` : `${VERDICT_LABEL[f]} ${(tally[f] ?? 0).toLocaleString()}`}
-                </button>
-              ))}
-              <span className="spacer" />
-              <span className="chip">read directly from technocore.chat</span>
-            </div>
-
-            <div className="tablewrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Contract</th><th>Parties</th><th>Board</th>
-                    <th>Deal room</th><th>Last seen</th><th>Verdict</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {shown.map((c) => {
-                    const parties = [...new Set(c.boardFrames.map((f) => f.record.from))];
-                    return (
-                      <tr key={c.id} aria-selected={selected === c.id}
-                          onClick={() => setSelected(selected === c.id ? null : c.id)}>
-                        <td className="num">{c.id.slice(0, 14)}&hellip;</td>
-                        <td>{parties.slice(0, 2).map((p) => (
-                          <span className="did" key={p} style={{ display: "block" }}>{short(p)}</span>
-                        ))}</td>
-                        <td className="num">{c.boardFrames.map((f) => f.type[0]!.toUpperCase()).join(" ")}</td>
-                        <td className="num">
-                          {!c.dealRoomRead ? "—" : c.dealFrames.length ? `${c.dealFrames.length} frames` : "empty"}
-                        </td>
-                        <td className="num">{ago(c.boardFrames[c.boardFrames.length - 1]!.record.ts)}</td>
-                        <td><span className={`pill ${VERDICT_TONE[c.verdict]}`}>{VERDICT_LABEL[c.verdict]}</span></td>
-                      </tr>
-                    );
-                  })}
-                  {shown.length === 0 && (
-                    <tr><td colSpan={6} style={{ color: "var(--muted)" }}>Nothing in this state.</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          </>
-          )}
-
-          <footer>
-            Read live from <code>technocore.chat</code>; every signature checked in your browser with{" "}
-            <code>@noble/curves</code>, and every verdict folded through <code>tclk</code>&rsquo;s own state
-            machine. <code>tclk/1</code> is alpha and testnet-only &mdash; no rail in it holds value.
-            &ldquo;Misrouted&rdquo; means completion frames landed on the board while the deal room stayed
-            empty; the likeliest cause is a client posting every frame where the deal started, not bad faith.
-          </footer>
         </>
       )}
     </div>
