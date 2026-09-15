@@ -621,3 +621,94 @@ table.board tr.pick:active td { background: var(--accent-soft); }
   background: var(--surface-2); border: 1px solid var(--line-soft); border-radius: 10px;
 }
 @media (min-width: 720px) { .filters.standalone .search { flex: 1 1 260px; margin-bottom: 0; } }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   PLAY
+
+   The brief: fun, on a phone, without costing readability. The trap is that
+   "playful" usually arrives as ornament, and we already deleted one piece of
+   ornament for outranking the data it decorated. So the play lives IN the
+   numbers — motion that means something, weight where the meaning is — and
+   never in a new layer on top of them.
+
+   Every animation here is bounded, runs once, and is removed entirely under
+   prefers-reduced-motion.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* The headline number counts in. It is the one figure the whole page exists to
+   deliver, and a number that arrives feels different from one that was always
+   sitting there. */
+@keyframes land {
+  0%   { transform: translateY(14px) scale(.92); opacity: 0 }
+  60%  { transform: translateY(-3px) scale(1.02); opacity: 1 }
+  100% { transform: none; opacity: 1 }
+}
+.headline .huge { animation: land .55s cubic-bezier(.2,.9,.25,1) both; }
+.headline .of   { animation: land .55s cubic-bezier(.2,.9,.25,1) .08s both; }
+.headline p     { animation: land .5s cubic-bezier(.2,.9,.25,1) .14s both; }
+
+/* Ranking rows deal in, briefly, like a hand being laid out. Capped at eight
+   so row nine is never waiting on an animation to finish. */
+@keyframes dealin { from { opacity: 0; transform: translateX(-6px) } to { opacity: 1; transform: none } }
+table.board tbody tr { animation: dealin .3s ease both; }
+table.board tbody tr:nth-child(1) { animation-delay: .02s }
+table.board tbody tr:nth-child(2) { animation-delay: .05s }
+table.board tbody tr:nth-child(3) { animation-delay: .08s }
+table.board tbody tr:nth-child(4) { animation-delay: .11s }
+table.board tbody tr:nth-child(5) { animation-delay: .14s }
+table.board tbody tr:nth-child(6) { animation-delay: .17s }
+table.board tbody tr:nth-child(7) { animation-delay: .20s }
+table.board tbody tr:nth-child(n+8) { animation-delay: .22s }
+
+/* The gauge fills from empty, so a 100% bar visibly earns the width and an
+   empty one visibly stays empty. */
+@keyframes fillup { from { width: 0 } }
+.ratebar .fill { animation: fillup .7s cubic-bezier(.2,.8,.3,1) both; }
+
+/* A perfect record gets a slow sheen. Only 21 agents in 945 can trigger this,
+   which is exactly why it is worth marking. */
+@keyframes sheen { 0%,88% { background-position: -140% 0 } 100% { background-position: 240% 0 } }
+.ratebar .fill.high {
+  background-image: linear-gradient(90deg, var(--ok), color-mix(in srgb, var(--ok) 70%, var(--accent)) 55%, rgb(255 255 255 / .34) 62%, color-mix(in srgb, var(--ok) 70%, var(--accent)) 70%, var(--ok));
+  background-size: 240% 100%;
+  animation: fillup .7s cubic-bezier(.2,.8,.3,1) both, sheen 5.5s ease-in-out 1.2s infinite;
+}
+
+/* Verdict badges get a shape, not just a colour — readable at a glance and
+   still legible to anyone who cannot separate red from green. */
+.trust { border-width: 1px; border-style: solid; }
+.trust.good { border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+.trust.bad  { border-color: color-mix(in srgb, var(--void) 38%, transparent); border-style: dashed; }
+
+/* Cards arrive in sequence rather than all at once. Short enough that a fast
+   scroll never catches an empty card. */
+@keyframes rise { from { opacity: 0; transform: translateY(8px) } to { opacity: 1; transform: none } }
+.cards .card { animation: rise .32s ease both; }
+.cards .card:nth-child(1) { animation-delay: .02s }
+.cards .card:nth-child(2) { animation-delay: .06s }
+.cards .card:nth-child(3) { animation-delay: .10s }
+.cards .card:nth-child(n+4) { animation-delay: .12s }
+
+/* Tapping a tab should feel like a switch, not a page load. */
+.tab { transition: background .16s ease, color .16s ease, transform .1s ease; }
+.tab:active { transform: scale(.96); }
+.tab.on { box-shadow: 0 1px 10px color-mix(in srgb, var(--accent) 34%, transparent); }
+
+/* The copy button confirms in place — the payoff moment of the whole flow. */
+.copybtn { transition: background .15s ease, color .15s ease, transform .1s ease; }
+.copybtn:active { transform: scale(.985); }
+
+/* The identity chip tilts a little on press. One small piece of delight on an
+   element that is otherwise pure identification. */
+.chipart { transition: transform .18s cubic-bezier(.2,.9,.3,1.4); }
+.card:active .chipart { transform: rotate(-6deg) scale(1.06); }
+
+/* Everything above is decoration in the literal sense: removing it changes
+   nothing about what the page says. */
+@media (prefers-reduced-motion: reduce) {
+  .headline .huge, .headline .of, .headline p,
+  table.board tbody tr, .ratebar .fill, .ratebar .fill.high,
+  .cards .card { animation: none !important; }
+  .tab, .copybtn, .chipart { transition: none !important; }
+  .tab:active, .copybtn:active, .card:active .chipart { transform: none !important; }
+}
