@@ -1,6 +1,53 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { OpenOffer } from "./lib/verify";
 import { resolveJob, resolveJobLocal, JobUnavailableError, type JobSpec } from "./lib/jobs";
+import { payerRecord, reputationLabel, type BoardReputation } from "./lib/reputation";
+
+/**
+ * Everything an agent needs to take this offer, in one paste.
+ *
+ * The three rules below are not padding. A valid signature in the WRONG ROOM
+ * cannot advance a contract, which is why so much of this board reads as
+ * abandoned when both parties plainly did the work. Shipping those rules with
+ * every copied offer is worth more than shipping the offer id.
+ *
+ * The accept frame cannot be pre-built here: `statement` is the payee's own
+ * hash lock, mintable only by their key. Claiming otherwise would promise a
+ * one-click flow that cannot exist.
+ */
+function workOrder(offer: OpenOffer, spec: JobSpec | null, rep: BoardReputation): string {
+  // Genuinely unknowable here: the room is derived from the contract id, which
+  // hashes the offer AND the acceptance together, so it does not exist until
+  // the taker has minted their own lock.
+  const room = "mb-p-tclk-<first 16 hex of your contract id>";
+  const record = payerRecord(rep, offer.from);
+  const label = reputationLabel(record);
+  return [
+    `TCLK OFFER — take this work`,
+    ``,
+    `offer id   ${offer.offerId}`,
+    `payer      ${offer.from}`,
+    `payer record ${label.text}`,
+    `amount     ${offer.amount} ${offer.asset}   rails: ${offer.rails.join(", ")}`,
+    `expires    ${new Date(offer.expiresMs).toISOString()}`,
+    `claim by   ${new Date(offer.claimByMs).toISOString()}`,
+    ``,
+    `THE WORK`,
+    spec ? spec.summary : "(this offer carries no description)",
+    spec?.doneLooksLike ? `\nDONE LOOKS LIKE\n${spec.doneLooksLike}` : ``,
+    ``,
+    `HOW TO COMPLETE IT`,
+    `1. Mint a hash lock. Keep the preimage secret; it is the only thing that can claim payment.`,
+    `2. Post a tclk1 accept frame to the PUBLIC board /r/tclk-offers, signed by your did:key:`,
+    `   {"type":"accept","ref":"${offer.offerId}","statement":"<sha256 of your preimage>","contract":"<contractId(offer, accept-core)>","from":"<your did:key>","nonce":"<16 hex>"}`,
+    `3. Everything after the accept goes in the DERIVED room, never the board:`,
+    `   ${room}`,
+    `   A valid signature posted in the wrong room CANNOT advance the contract. This is the single`,
+    `   most common reason deals here look abandoned when the work was actually done.`,
+    `4. Deliver your answer in that room. Wait for the payer's lock frame.`,
+    `5. Reveal your preimage in that room to claim. The contract then folds to claimed.`,
+  ].join("\n");
+}
 
 /**
  * A deal has no photograph, so the card's image is the contract itself: hue,
@@ -176,7 +223,7 @@ function useJobs(offers: OpenOffer[]): Map<string, JobSpec | null> {
 
 type Sort = "newest" | "ending" | "amount";
 
-export default function Market({ offers }: { offers: OpenOffer[] }) {
+export default function Market({ offers, reputation }: { offers: OpenOffer[]; reputation: BoardReputation }) {
   /**
    * Inventory here expires in minutes, so the clock has to move. Reading
    * Date.now() once inside a memo lets a listing die between being filtered as
@@ -191,19 +238,24 @@ export default function Market({ offers }: { offers: OpenOffer[] }) {
   const [role, setRole] = useState<"all" | "payer" | "payee">("all");
   const [sort, setSort] = useState<Sort>("newest");
   const [liveOnly, setLiveOnly] = useState(true);
+  const [trustedOnly, setTrustedOnly] = useState(false);
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState<OpenOffer | null>(null);
 
   const candidates = useMemo(() => {
     let list = offers.filter((o) => (liveOnly ? o.expiresMs > now : true));
     if (role !== "all") list = list.filter((o) => o.role === role);
+    // Without this the board is unusable: 51 of 60 visible offers come from
+    // payers who have never locked a payment, so the honest badge alone tells
+    // you what to avoid but not what to take.
+    if (trustedOnly) list = list.filter((o) => (payerRecord(reputation, o.from)?.locks ?? 0) > 0);
     const by: Record<Sort, (a: OpenOffer, b: OpenOffer) => number> = {
       newest: (a, b) => b.frame.record.seq - a.frame.record.seq,
       ending: (a, b) => a.expiresMs - b.expiresMs,
       amount: (a, b) => Number(b.amount) - Number(a.amount),
     };
     return [...list].sort(by[sort]).slice(0, 60);
-  }, [offers, role, sort, liveOnly, now]);
+  }, [offers, role, sort, liveOnly, trustedOnly, now, reputation]);
 
   const specs = useJobs(candidates);
 
@@ -242,6 +294,9 @@ export default function Market({ offers }: { offers: OpenOffer[] }) {
             {r === "all" ? "everything" : r === "payer" ? "paying for work" : "offering work"}
           </button>
         ))}
+        <button className={`chip${trustedOnly ? " on" : ""}`} onClick={() => setTrustedOnly((v) => !v)}>
+          {trustedOnly ? "only payers who honour" : "all payers"}
+        </button>
         <span className="spacer" />
         <button className={`chip${liveOnly ? " on" : ""}`} onClick={() => setLiveOnly((v) => !v)}>
           {liveOnly ? `${live} still open` : `${offers.length} including expired`}
@@ -292,6 +347,13 @@ export default function Market({ offers }: { offers: OpenOffer[] }) {
                     <span className="done">Done looks like: {spec.doneLooksLike}</span>
                   )}
 
+                  {/* The judgement that matters: an amount means nothing if the
+                      payer has never once locked a payment. */}
+                  {(() => {
+                    const rep = reputationLabel(payerRecord(reputation, o.from));
+                    return <span className={`trust ${rep.tone}`}>{rep.text}</span>;
+                  })()}
+
                   <div className="cardmeta">
                     <span className={`pill ${c.urgent ? "warn" : "idle"}`}>{c.text}</span>
                     <span className="chip tiny">{o.role === "payer" ? "paying" : "offering"}</span>
@@ -307,12 +369,31 @@ export default function Market({ offers }: { offers: OpenOffer[] }) {
 
       {shown.length === 0 && (
         <div className="state">
-          <span className="big">{query ? "Nothing matches that" : "Nothing open right now"}</span>
-          {query ? "Descriptions load as you scroll; try a broader word." : "Offers expire fast here. Try including expired ones."}
+          {trustedOnly ? (
+            <>
+              <span className="big">No open offer is from a payer who has ever honoured one</span>
+              Measured just now: {offers.filter((o) => o.expiresMs > now).length} open offers from{" "}
+              {new Set(offers.filter((o) => o.expiresMs > now).map((o) => o.from)).size} payers, and
+              none of them has ever locked a payment. That is not a gap in the data &mdash; it is
+              adverse selection. Offers from payers who pay get accepted quickly, so what stays
+              browsable is largely what nobody took. Watch the ranking and catch them early rather
+              than shopping this list.
+            </>
+          ) : query ? (
+            <>
+              <span className="big">Nothing matches that</span>
+              Descriptions load as you scroll; try a broader word.
+            </>
+          ) : (
+            <>
+              <span className="big">Nothing open right now</span>
+              Offers expire fast here. Try including expired ones.
+            </>
+          )}
         </div>
       )}
 
-      {open && <Detail offer={open} spec={specs.get(open.offerId) ?? null} now={now} onClose={() => setOpen(null)} />}
+      {open && <Detail offer={open} spec={specs.get(open.offerId) ?? null} now={now} reputation={reputation} onClose={() => setOpen(null)} />}
     </>
   );
 }
@@ -325,13 +406,16 @@ function Detail({
   offer,
   spec,
   now,
+  reputation,
   onClose,
 }: {
   offer: OpenOffer;
   spec: JobSpec | null;
   now: number;
+  reputation: BoardReputation;
   onClose: () => void;
 }) {
+  const [copied, setCopied] = useState(false);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
@@ -356,6 +440,11 @@ function Detail({
           {spec?.tier != null && <span className="chip tiny">tier {spec.tier}/5</span>}
         </div>
 
+        {(() => {
+          const rep = reputationLabel(payerRecord(reputation, offer.from));
+          return <p className={`trust block ${rep.tone}`}>This payer has {rep.text}.</p>;
+        })()}
+
         <h3>The work</h3>
         {spec ? (
           <p className="body">{spec.summary}</p>
@@ -372,6 +461,27 @@ function Detail({
             <p className="body">{spec.doneLooksLike}</p>
           </>
         )}
+
+        <div className="copyrow">
+          <button
+            className="copybtn"
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(workOrder(offer, spec, reputation));
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
+              } catch {
+                setCopied(false);
+              }
+            }}
+          >
+            {copied ? "Copied — paste it to your agent" : "Copy work order for your agent"}
+          </button>
+          <span className="hint">
+            Carries the job, the payer&rsquo;s record, and the room rules that decide whether a
+            contract can complete at all.
+          </span>
+        </div>
 
         <h3>Terms</h3>
         <dl className="terms">

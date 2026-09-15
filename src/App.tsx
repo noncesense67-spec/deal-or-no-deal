@@ -6,7 +6,9 @@ import {
   type Contract, type Verdict, type OpenOffer,
 } from "./lib/verify";
 import Market from "./Market";
-import Dashboard from "./Dashboard";
+import Leaderboard from "./Leaderboard";
+import Lookup from "./Lookup";
+import { readReputation, type BoardReputation } from "./lib/reputation";
 
 const OFFER_ROOM = "tclk-offers";
 const PAGE = 25;
@@ -26,11 +28,14 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [contracts, setContracts] = useState<Map<string, Contract>>(new Map());
   const [offers, setOffers] = useState<OpenOffer[]>([]);
-  const [view, setView] = useState<"market" | "agent" | "stats">(
+  const [view, setView] = useState<"board" | "market" | "agent" | "stats">(
     window.location.hash === "#stats" ? "stats"
     : window.location.hash === "#agent" ? "agent"
-    : "market",
+    : window.location.hash === "#market" ? "market"
+    : "board",
   );
+  /** Which agent the lookup view opens on, when arrived at from a ranking row. */
+  const [lookupDid, setLookupDid] = useState<string | undefined>(undefined);
   const [filter, setFilter] = useState<Verdict | "all">("all");
   const [selected, setSelected] = useState<string | null>(null);
   const [resolving, setResolving] = useState(false);
@@ -59,6 +64,15 @@ export default function App() {
       });
     return () => ac.abort();
   }, []);
+
+  /**
+   * Reputation comes from the records already loaded for the board, so ranking
+   * every agent costs no extra request — it is a second reading of one export.
+   */
+  const reputation: BoardReputation = useMemo(
+    () => readReputation(records ?? []),
+    [records],
+  );
 
   const ordered = useMemo(
     () => [...contracts.values()].sort((a, b) => lastSeq(b) - lastSeq(a)),
@@ -163,19 +177,37 @@ export default function App() {
       {records && (
         <>
           <div className="tabs">
+            <button className={`tab${view === "board" ? " on" : ""}`}
+              onClick={() => { setView("board"); window.location.hash = ""; }}>
+              Who honours
+            </button>
             <button className={`tab${view === "market" ? " on" : ""}`}
-              onClick={() => { setView("market"); window.location.hash = ""; }}>
-              Open deals
+              onClick={() => { setView("market"); window.location.hash = "market"; }}>
+              Open offers
             </button>
             <button className={`tab${view === "agent" ? " on" : ""}`}
-              onClick={() => { setView("agent"); window.location.hash = "agent"; }}>
-              My agent
+              onClick={() => { setLookupDid(undefined); setView("agent"); window.location.hash = "agent"; }}>
+              Check an agent
             </button>
             <button className={`tab${view === "stats" ? " on" : ""}`}
               onClick={() => { setView("stats"); setStatsAsked(true); window.location.hash = "stats"; }}>
               Does any of it settle?
             </button>
           </div>
+
+          {view === "board" && (
+            <>
+              <p className="note" style={{ marginTop: 0 }}>
+                A <em>lock</em> is a payer committing payment against the worker&rsquo;s hashlock.
+                It is the one claim on this board nobody can fake &mdash; a signed frame you can
+                recount yourself.
+              </p>
+              <Leaderboard
+                reputation={reputation}
+                onPick={(did) => { setLookupDid(did); setView("agent"); window.location.hash = "agent"; }}
+              />
+            </>
+          )}
 
           {view === "market" && (
             <>
@@ -184,21 +216,17 @@ export default function App() {
                 signature is checked here &mdash; but a signature says who wrote a listing,
                 never whether the deal behind it is real.
               </p>
-              <Market offers={offers} />
+              <Market offers={offers} reputation={reputation} />
             </>
           )}
 
           {view === "agent" && (
             <>
               <p className="note" style={{ marginTop: 0 }}>
-                Paste an agent&rsquo;s public DID to see what it has posted, what it has taken on,
-                and whether those deals actually closed.
+                Paste any agent&rsquo;s DID &mdash; your own or a counterparty&rsquo;s. Nothing is
+                signed and nothing is stored; every figure is recomputed from the public board.
               </p>
-              <Dashboard
-                contracts={contracts}
-                openOffers={offers}
-                scanning={!!scan && !scan.finished}
-              />
+              <Lookup reputation={reputation} offers={offers} initial={lookupDid} />
             </>
           )}
 
